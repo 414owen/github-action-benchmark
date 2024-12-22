@@ -263,7 +263,7 @@ async function handleAlert(benchName, curSuite, prevSuite, config) {
         }
         else {
             core.debug(`${len} alerts exceeding the alert threshold ${alertThreshold} were found but` +
-                ` all of them did not exceed the failure threshold ${threshold}`);
+                ` none of them exceeded the failure threshold ${threshold}`);
         }
     }
 }
@@ -438,8 +438,8 @@ async function writeBenchmark(bench, config) {
     }
     else {
         await handleComment(name, bench, prevBench, config);
-        await handleAlert(name, bench, prevBench, config);
         await handleSummary(name, bench, prevBench, config);
+        await handleAlert(name, bench, prevBench, config);
     }
 }
 exports.writeBenchmark = writeBenchmark;
