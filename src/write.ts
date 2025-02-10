@@ -94,10 +94,11 @@ interface Alert {
     ratio: number;
 }
 
-function findAlerts(curSuite: Benchmark, prevSuite: Benchmark, threshold: number): Alert[] {
+function findAlerts(curSuite: Benchmark, prevSuite: Benchmark, threshold: number): [Alert[], Alert[]] {
     core.debug(`Comparing current:${curSuite.commit.id} and prev:${prevSuite.commit.id} for alert`);
 
-    const alerts = [];
+    const losses = [];
+    const gains = [];
     for (const current of curSuite.benches) {
         const prev = prevSuite.benches.find((b) => b.name === current.name);
         if (prev === undefined) {
@@ -107,16 +108,19 @@ function findAlerts(curSuite: Benchmark, prevSuite: Benchmark, threshold: number
 
         const ratio = getRatio(curSuite.tool, prev, current);
 
+        if (ratio < 1/threshold) {
+            gains.push({ current, prev, ratio });
+        }
         if (ratio > threshold) {
             core.warning(
                 `Performance alert! Previous value was ${prev.value} and current value is ${current.value}.` +
-                    ` It is ${ratio}x worse than previous exceeding a ratio threshold ${threshold}`,
+                    ` It is ${ratio}x worse than previous, exceeding ratio threshold ${threshold}`,
             );
-            alerts.push({ current, prev, ratio });
+            losses.push({ current, prev, ratio });
         }
     }
 
-    return alerts;
+    return [losses, gains];
 }
 
 function getCurrentRepoMetadata() {
@@ -204,7 +208,8 @@ export function buildComment(
 }
 
 function buildAlertComment(
-    alerts: Alert[],
+    losses: Alert[],
+    gains: Alert[],
     benchName: string,
     curSuite: Benchmark,
     prevSuite: Benchmark,
@@ -223,15 +228,39 @@ function buildAlertComment(
         '',
         `Previous commit: ${prevSuite.commit.id}`,
         `Current commit: ${curSuite.commit.id}`,
-        '',
-        `| Benchmark suite | Current | Previous | Ratio |`,
-        '|-|-|-|-|',
     ];
 
-    for (const alert of alerts) {
-        const { current, prev, ratio } = alert;
-        const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
-        lines.push(line);
+    if (gains.length > 0) {
+        lines.push(...[
+            '',
+            ':rocket: The following benchmarks improved:',
+            '',
+            `| Benchmark suite | Current | Previous | Ratio |`,
+            '|-|-|-|-|',
+        ]);
+
+        for (const alert of gains) {
+            const { current, prev, ratio } = alert;
+            const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
+            lines.push(line);
+        }
+
+    }
+
+    if (losses.length > 0) {
+        lines.push(...[
+            '',
+            ':snail: The following benchmarks got worse:',
+            '',
+            `| Benchmark suite | Current | Previous | Ratio |`,
+            '|-|-|-|-|',
+        ]);
+
+        for (const alert of losses) {
+            const { current, prev, ratio } = alert;
+            const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
+            lines.push(line);
+        }
     }
 
     // Footer
@@ -282,14 +311,15 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
         return;
     }
 
-    const alerts = findAlerts(curSuite, prevSuite, alertThreshold);
+    const [losses, gains] = findAlerts(curSuite, prevSuite, alertThreshold);
+    const alerts = [...losses, ...gains];
     if (alerts.length === 0) {
         core.debug('No performance alert found happily');
         return;
     }
 
     core.debug(`Found ${alerts.length} alerts`);
-    const body = buildAlertComment(alerts, benchName, curSuite, prevSuite, alertThreshold, alertCommentCcUsers);
+    const body = buildAlertComment(losses, gains, benchName, curSuite, prevSuite, alertThreshold, alertCommentCcUsers);
     let message = body;
 
     if (commentOnAlert) {
@@ -303,9 +333,9 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
 
     if (failOnAlert) {
         // Note: alertThreshold is smaller than failThreshold. It was checked in config.ts
-        const len = alerts.length;
+        const len = losses.length;
         const threshold = floatStr(failThreshold);
-        const failures = alerts.filter((a) => a.ratio > failThreshold);
+        const failures = losses.filter((a) => a.ratio > failThreshold);
         if (failures.length > 0) {
             core.debug('Mark this workflow as fail since one or more fatal alerts found');
             if (failThreshold !== alertThreshold) {
