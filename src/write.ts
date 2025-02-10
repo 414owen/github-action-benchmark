@@ -148,11 +148,56 @@ function floatStr(n: number) {
     return n.toString();
 }
 
-function strVal(b: BenchmarkResult): string {
-    let s = `\`${b.value}\` ${b.unit}`;
-    if (b.range) {
-        s += ` (\`${b.range}\`)`;
+const round = (n: number, places: number = 3): string =>
+    n.toFixed(places).replace(/\.?0+$/, "");
+
+function strDuration(n: number): string {
+    let unit = "ns";
+    // I could have DRYd this with some defunctionalization
+    // and a for loop, but I really don't care enough.
+    if (n > 1000) {
+        unit = "μs";
+        n /= 1000;
     }
+    if (n > 1000) {
+        unit = "ms";
+        n /= 1000;
+    }
+    if (n > 1000) {
+        unit = "s";
+        n /= 1000;
+    }
+    if (n > 60) {
+        const mins = Math.floor(n / 60);
+        const secs = n % 60;
+        return `${mins}m ${round(secs)}s`
+    }
+    return `${round(n)}${unit}`;
+}
+
+let NS_RANGE_REGEX = /^±\s*([0-9])+$/;
+
+function strVal(b: BenchmarkResult): string {
+
+    let s = "";
+    let range = b.range;
+
+    if (b.unit == 'ns/iter') {
+        s += `\`${strDuration(b.value)}/iter\``;
+        if (range && range.match(NS_RANGE_REGEX)) {
+            range = "± " + strDuration(parseInt(range.replace(NS_RANGE_REGEX, "$1")));
+        } else {
+            // If we can't show a unit, the give up...
+            range = undefined;
+        }
+    } else {
+        s += `\`${b.value} ${b.unit}\``;
+    }
+
+    if (range) {
+        s += `<br>(\`${range}\`)`;
+    }
+
     return s;
 }
 
@@ -175,7 +220,10 @@ export function buildComment(
         '',
         expandableDetails ? '<details>' : '',
         '',
-        `| Benchmark suite | Current: ${curSuite.commit.id} | Previous: ${prevSuite.commit.id} | Ratio |`,
+        `Previous: ${prevSuite.commit.id}`,
+        `Current: ${curSuite.commit.id}`,
+        '',
+        `| Benchmark suite | Current | Previous | Ratio |`,
         '|-|-|-|-|',
     ];
 
@@ -218,7 +266,10 @@ function buildAlertComment(
         `Possible performance regression was detected for benchmark${benchmarkText}.`,
         `Benchmark result of this commit is worse than the previous benchmark result exceeding threshold \`${thresholdString}\`.`,
         '',
-        `| Benchmark suite | Current: ${curSuite.commit.id} | Previous: ${prevSuite.commit.id} | Ratio |`,
+        `Previous commit: ${prevSuite.commit.id}`,
+        `Current commit: ${curSuite.commit.id}`,
+        '',
+        `| Benchmark suite | Current | Previous | Ratio |`,
         '|-|-|-|-|',
     ];
 
