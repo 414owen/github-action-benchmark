@@ -239,12 +239,12 @@ function buildAlertComment(losses, gains, benchName, curSuite, prevSuite, thresh
             '### :rocket: The following benchmarks show improvements:',
         ]);
         lines.push(...RESULT_TABLE_HEADER);
-        pushResultLines(losses, lines);
+        pushResultLines(gains, lines);
     }
     if (losses.length > 0) {
         lines.push(...[
             '',
-            ':snail: The following benchmarks show regressions:',
+            '### :snail: The following benchmarks show regressions:',
         ]);
         lines.push(...RESULT_TABLE_HEADER);
         pushResultLines(losses, lines);
