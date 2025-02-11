@@ -163,19 +163,19 @@ function strDuration(n: number): string {
     if (n > 1000) {
         unit = "μs";
         n /= 1000;
-    }
-    if (n > 1000) {
-        unit = "ms";
-        n /= 1000;
-    }
-    if (n > 1000) {
-        unit = "s";
-        n /= 1000;
-    }
-    if (n > 60) {
-        const mins = Math.floor(n / 60);
-        const secs = n % 60;
-        return `${mins}m ${round(secs)}s`
+        if (n > 1000) {
+            unit = "ms";
+            n /= 1000;
+            if (n > 1000) {
+                unit = "s";
+                n /= 1000;
+                if (n > 60) {
+                    const mins = Math.floor(n / 60);
+                    const secs = n % 60;
+                    return `${mins}m ${round(secs)}s`
+                }
+            }
+        }
     }
     return `${round(n)}${unit}`;
 }
