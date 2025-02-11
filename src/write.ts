@@ -108,10 +108,11 @@ function findAlerts(curSuite: Benchmark, prevSuite: Benchmark, threshold: number
 
         const ratio = getRatio(curSuite.tool, prev, current);
 
-        if (ratio < 1/threshold) {
+        if (threshold === 0) {
+            gains.push({current, prev, ratio});
+        } else if (ratio < 1/threshold) {
             gains.push({ current, prev, ratio });
-        }
-        if (ratio > threshold) {
+        } else if (ratio > threshold) {
             core.warning(
                 `Performance alert! Previous value was ${prev.value} and current value is ${current.value}.` +
                     ` It is ${ratio}x worse than previous, exceeding ratio threshold ${threshold}`,
@@ -207,6 +208,51 @@ export function buildComment(
     return lines.join('\n');
 }
 
+function pushResultLines(results: Alert[], output: string[]) {
+    results.sort((a, b) => a.ratio - b.ratio);
+    for (const alert of results) {
+        const { current, prev, ratio } = alert;
+        const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
+        output.push(line);
+    }
+}
+
+const RESULT_TABLE_HEADER = [
+    '',
+    `| Benchmark suite | Current | Previous | Ratio |`,
+    '|-|-|-|-|',
+];
+
+
+function buildReportComment(
+    results: Alert[],
+    benchName: string,
+    curSuite: Benchmark,
+    prevSuite: Benchmark,
+    cc: string[],
+): string {
+    // Do not show benchmark name if it is the default value 'Benchmark'.
+    const benchmarkText = benchName === 'Benchmark' ? '' : ` **'${benchName}'**`;
+    const lines = [
+        '# Performance Report',
+        '',
+        `For benchmark${benchmarkText}.`,
+        '',
+        `Previous commit: ${prevSuite.commit.id}`,
+        `Current commit: ${curSuite.commit.id}`,
+    ];
+
+    lines.push(...RESULT_TABLE_HEADER);
+    pushResultLines(results, lines);
+    lines.push('', commentFooter());
+
+    if (cc.length > 0) {
+        lines.push('', `CC: ${cc.join(' ')}`);
+    }
+
+    return lines.join('\n');
+}
+
 function buildAlertComment(
     losses: Alert[],
     gains: Alert[],
@@ -217,14 +263,12 @@ function buildAlertComment(
     cc: string[],
 ): string {
     // Do not show benchmark name if it is the default value 'Benchmark'.
-    const benchmarkText = benchName === 'Benchmark' ? '' : ` **'${benchName}'**`;
-    const title = threshold === 0 ? '# Performance Report' : '# :warning: **Performance Alert** :warning:';
+    const benchmarkText = benchName === 'Benchmark' ? '' : ` for **'${benchName}'**`;
     const thresholdString = floatStr(threshold);
     const lines = [
-        title,
+        `# Performance Report${benchmarkText}`,
         '',
-        `Possible performance regression was detected for benchmark${benchmarkText}.`,
-        `Benchmark result of this commit is worse than the previous benchmark result exceeding threshold \`${thresholdString}\`.`,
+        `Benchmark result(s) exceed ratio of \`${thresholdString}\`.`,
         '',
         `Previous commit: ${prevSuite.commit.id}`,
         `Current commit: ${curSuite.commit.id}`,
@@ -233,34 +277,20 @@ function buildAlertComment(
     if (gains.length > 0) {
         lines.push(...[
             '',
-            ':rocket: The following benchmarks improved:',
-            '',
-            `| Benchmark suite | Current | Previous | Ratio |`,
-            '|-|-|-|-|',
+            '### :rocket: The following benchmarks show improvements:',
         ]);
-
-        for (const alert of gains) {
-            const { current, prev, ratio } = alert;
-            const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
-            lines.push(line);
-        }
+        lines.push(...RESULT_TABLE_HEADER);
+        pushResultLines(gains, lines);
 
     }
 
     if (losses.length > 0) {
         lines.push(...[
             '',
-            ':snail: The following benchmarks got worse:',
-            '',
-            `| Benchmark suite | Current | Previous | Ratio |`,
-            '|-|-|-|-|',
+            '### :snail: The following benchmarks show regressions:',
         ]);
-
-        for (const alert of losses) {
-            const { current, prev, ratio } = alert;
-            const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
-            lines.push(line);
-        }
+        lines.push(...RESULT_TABLE_HEADER);
+        pushResultLines(losses, lines);
     }
 
     // Footer
@@ -318,8 +348,15 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
         return;
     }
 
-    core.debug(`Found ${alerts.length} alerts`);
-    const body = buildAlertComment(losses, gains, benchName, curSuite, prevSuite, alertThreshold, alertCommentCcUsers);
+    let body = '';
+    if (alertThreshold === 0) {
+        core.debug(`Alert threshold is 0. Leaving report with ${alerts.length} alerts`);
+        body = buildReportComment(alerts, benchName, curSuite, prevSuite, alertCommentCcUsers);
+    } else {
+        core.debug(`Found ${alerts.length} alerts`);
+        body = buildAlertComment(losses, gains, benchName, curSuite, prevSuite, alertThreshold, alertCommentCcUsers);
+    }
+
     let message = body;
 
     if (commentOnAlert) {
