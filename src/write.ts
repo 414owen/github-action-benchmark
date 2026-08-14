@@ -8,7 +8,7 @@ import { Benchmark, BenchmarkResult } from './extract';
 import { Config, ToolType } from './config';
 import { DEFAULT_INDEX_HTML } from './default_index_html';
 import { leavePRComment } from './comment/leavePRComment';
-import { leaveCommitComment } from './comment/leaveCommitComment';
+import { leaveCommitComment, updateCommitCommentIfExists } from './comment/leaveCommitComment';
 import { addBenchmarkEntry } from './addBenchmarkEntry';
 
 export type BenchmarkSuites = { [name: string]: Benchmark[] };
@@ -348,6 +348,28 @@ function buildAlertComment(
     return lines.join('\n');
 }
 
+function buildNoAlertsComment(benchName: string, curSuite: Benchmark, prevSuite: Benchmark, cc: string[]): string {
+    // Do not show benchmark name if it is the default value 'Benchmark'.
+    const benchmarkText = benchName === 'Benchmark' ? '' : ` for **'${benchName}'**`;
+    const lines = [
+        '# Performance Report',
+        '',
+        `No performance alerts${benchmarkText}.`,
+        '',
+        `Previous commit: ${prevSuite.commit.id}`,
+        `Current commit: ${curSuite.commit.id}`,
+    ];
+
+    // Footer
+    lines.push('', commentFooter());
+
+    if (cc.length > 0) {
+        lines.push('', `CC: ${cc.join(' ')}`);
+    }
+
+    return lines.join('\n');
+}
+
 async function leaveComment(commitId: string, body: string, commentId: string, token: string) {
     core.debug('Sending comment:\n' + body);
 
@@ -378,6 +400,37 @@ async function handleComment(benchName: string, curSuite: Benchmark, prevSuite: 
     await leaveComment(curSuite.commit.id, body, `${benchName} Summary`, githubToken);
 }
 
+async function replaceAlertCommentWithNoAlerts(body: string, commentId: string, token: string, prevCommitId: string) {
+    core.debug('Replacing an existing alert comment with a no-alerts message:\n' + body);
+
+    const repoMetadata = getCurrentRepoMetadata();
+    const pr = github.context.payload.pull_request;
+
+    if (pr?.number) {
+        // PR review comments are updated in place, so only update an existing alert comment
+        return await leavePRComment(
+            repoMetadata.owner.login,
+            repoMetadata.name,
+            pr.number,
+            body,
+            commentId,
+            token,
+            true,
+        );
+    }
+
+    // Commit comments are attached to the commit where the alert was detected. When the alert is
+    // resolved, update the alert comment left on the previous commit.
+    return await updateCommitCommentIfExists(
+        repoMetadata.owner.login,
+        repoMetadata.name,
+        prevCommitId,
+        body,
+        commentId,
+        token,
+    );
+}
+
 async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Benchmark, config: Config) {
     const { alertThreshold, githubToken, commentOnAlert, failOnAlert, alertCommentCcUsers, failThreshold } = config;
 
@@ -389,7 +442,19 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
     const [losses, gains] = findAlerts(curSuite, prevSuite, alertThreshold);
     const alerts = [...losses, ...gains];
     if (alerts.length === 0) {
-        core.debug('No performance alert found happily');
+        if (commentOnAlert) {
+            if (!githubToken) {
+                throw new Error("'comment-on-alert' input is set but 'github-token' input is not set");
+            }
+            // When a previous alert comment exists (e.g. an alert was left on an earlier commit of
+            // this PR), replace it with a message saying that no alerts are detected anymore instead
+            // of leaving the stale alert comment. Do not create a new comment when none exists.
+            core.debug('No performance alert was found. Replacing an existing alert comment with a no-alerts message');
+            const body = buildNoAlertsComment(benchName, curSuite, prevSuite, alertCommentCcUsers);
+            await replaceAlertCommentWithNoAlerts(body, `${benchName} Alert`, githubToken, prevSuite.commit.id);
+        } else {
+            core.debug('No performance alert found happily');
+        }
         return;
     }
 
@@ -409,8 +474,10 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
             throw new Error("'comment-on-alert' input is set but 'github-token' input is not set");
         }
         const res = await leaveComment(curSuite.commit.id, body, `${benchName} Alert`, githubToken);
-        const url = res.data.html_url;
-        message = body + `\nComment was generated at ${url}`;
+        if (res) {
+            const url = res.data.html_url;
+            message = body + `\nComment was generated at ${url}`;
+        }
     }
 
     if (failOnAlert) {

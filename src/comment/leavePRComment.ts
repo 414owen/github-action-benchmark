@@ -10,6 +10,7 @@ export async function leavePRComment(
     body: string,
     commentId: string,
     token: string,
+    updateOnly = false,
 ) {
     try {
         core.debug('leavePRComment start');
@@ -26,6 +27,10 @@ export async function leavePRComment(
         );
 
         if (!existingCommentId) {
+            if (updateOnly) {
+                core.debug('No existing alert comment was found. Skipping comment creation');
+                return null;
+            }
             core.debug('creating new pr comment');
             const createReviewResponse = await client.rest.pulls.createReview({
                 owner: repoOwner,

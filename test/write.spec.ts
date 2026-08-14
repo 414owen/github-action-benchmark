@@ -7,8 +7,8 @@ import { Config } from '../src/config';
 import { Benchmark } from '../src/extract';
 import { DataJson, writeBenchmark } from '../src/write';
 import { expect } from '@jest/globals';
-import { FakedOctokit, fakedRepos } from './fakedOctokit';
-import { wrapBodyWithBenchmarkTags } from '../src/comment/benchmarkCommentTags';
+import { FakedOctokit, fakedPulls, fakedRepos } from './fakedOctokit';
+import { benchmarkStartTag, wrapBodyWithBenchmarkTags } from '../src/comment/benchmarkCommentTags';
 
 const ok: (x: any, msg?: string) => asserts x = (x, msg) => {
     try {
@@ -67,6 +67,7 @@ const gitHubContext = {
             private: false,
             html_url: 'https://github.com/user/repo',
         } as RepositoryPayloadSubset | null,
+        pull_request: null as { number: number } | null,
     },
     workflow: 'Workflow name',
 };
@@ -132,6 +133,7 @@ describe.each(['https://github.com', 'https://github.enterprise.corp'])('writeBe
 
     afterEach(function () {
         fakedRepos.clear();
+        fakedPulls.clear();
     });
 
     // Utilities for test data
@@ -972,6 +974,106 @@ describe.each(['https://github.com', 'https://github.enterprise.corp'])('writeBe
                 expect('github-action-benchmark').toEqual(actionLink.text());
                 expect('https://github.com/marketplace/actions/continuous-benchmark').toEqual(actionLink.attr('href'));
             }
+        });
+
+        describe('when no alert is detected and comment-on-alert is enabled', function () {
+            const prevSuite: Benchmark = {
+                commit: commit('prev commit id'),
+                date: lastUpdate - 1000,
+                tool: 'cargo',
+                benches: [bench('bench_fib_10', 100)],
+            };
+            const curSuite: Benchmark = {
+                commit: commit('current commit id'),
+                date: lastUpdate,
+                tool: 'cargo',
+                benches: [bench('bench_fib_10', 110)], // Ratio 1.1 < 2.0 so no alert is detected
+            };
+            const cfg: Config = {
+                ...defaultCfg,
+                commentOnAlert: true,
+                githubToken: 'dummy token',
+                failOnAlert: false,
+            };
+
+            beforeEach(async function () {
+                await fs.writeFile(
+                    dataJson,
+                    JSON.stringify({
+                        lastUpdate,
+                        repoUrl,
+                        entries: { 'Test benchmark': [prevSuite] },
+                    }),
+                    'utf8',
+                );
+            });
+
+            it('replaces an existing alert commit comment on the previous commit with a no-alerts message', async function () {
+                fakedRepos.setCommitComments([
+                    { id: 123, body: wrapBodyWithBenchmarkTags('Test benchmark Alert', 'old alert body') },
+                ]);
+
+                await writeBenchmark(curSuite, cfg);
+
+                expect(fakedRepos.updatedCommitComments).toHaveLength(1);
+                const opts = fakedRepos.updatedCommitComments[0];
+                expect(opts.owner).toEqual('user');
+                expect(opts.repo).toEqual('repo');
+                expect(opts.comment_id).toEqual(123);
+                const body = opts.body;
+                expect(body.startsWith(benchmarkStartTag('Test benchmark Alert'))).toBe(true);
+                expect(body).toContain("No performance alerts for **'Test benchmark'**.");
+                expect(body).toContain('Previous commit: prev commit id');
+                expect(body).toContain('Current commit: current commit id');
+                expect(fakedRepos.spyOpts).toHaveLength(0); // No new commit comment was created
+            });
+
+            it('does not leave any comment when no previous alert commit comment exists', async function () {
+                fakedRepos.setCommitComments([]);
+
+                await writeBenchmark(curSuite, cfg);
+
+                expect(fakedRepos.updatedCommitComments).toHaveLength(0);
+                expect(fakedRepos.spyOpts).toHaveLength(0);
+            });
+
+            it('replaces an existing alert PR review comment with a no-alerts message', async function () {
+                gitHubContext.payload.pull_request = { number: 1 };
+                try {
+                    fakedPulls.setReviews([
+                        { id: 456, body: wrapBodyWithBenchmarkTags('Test benchmark Alert', 'old alert body') },
+                    ]);
+
+                    await writeBenchmark(curSuite, cfg);
+
+                    const updateCalls = fakedPulls.reviewCalls.filter((c) => c.method === 'updateReview');
+                    expect(updateCalls).toHaveLength(1);
+                    const opts = updateCalls[0].opts;
+                    expect(opts.owner).toEqual('user');
+                    expect(opts.repo).toEqual('repo');
+                    expect(opts.pull_number).toEqual(1);
+                    expect(opts.review_id).toEqual(456);
+                    expect(opts.body).toContain("No performance alerts for **'Test benchmark'**.");
+                    expect(opts.body).toContain('Previous commit: prev commit id');
+                    expect(opts.body).toContain('Current commit: current commit id');
+                    expect(fakedPulls.reviewCalls.filter((c) => c.method === 'createReview')).toHaveLength(0);
+                } finally {
+                    gitHubContext.payload.pull_request = null;
+                }
+            });
+
+            it('does not create a PR review comment when no previous alert comment exists', async function () {
+                gitHubContext.payload.pull_request = { number: 1 };
+                try {
+                    fakedPulls.setReviews([]);
+
+                    await writeBenchmark(curSuite, cfg);
+
+                    expect(fakedPulls.reviewCalls).toHaveLength(0);
+                } finally {
+                    gitHubContext.payload.pull_request = null;
+                }
+            });
         });
     });
 
